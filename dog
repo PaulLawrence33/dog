@@ -1,0 +1,67 @@
+#!/usr/bin/python
+
+import argparse
+import copy
+import signal
+import subprocess
+import sys
+import termios
+import threading
+
+parser = argparse.ArgumentParser(description='Connect to Android device via serial cable')
+parser.add_argument('port')
+parser.add_argument('--speed', '-s', type=int, default=115200)
+args = parser.parse_args();
+
+subprocess.call(['stty', '-F', args.port, str(args.speed)])
+
+event_kill = threading.Event()
+
+def read_fn(file):
+	while not event_kill.isSet():
+		sys.stdout.write(file.read(1))
+
+def write_fn(filename):
+	file = open(filename, "w")
+	while True:
+		c = sys.stdin.read(1)[0]
+		if c == '\x11':
+			event_kill.set()
+			return
+
+		sys.stdout.write(c)
+		file.write(c)
+
+attrs = termios.tcgetattr(sys.stdin)
+old_attrs = copy.deepcopy(attrs)
+
+attrs[0] &= ~(termios.IGNBRK | termios.BRKINT | termios.PARMRK | termios.ISTRIP | termios.IXON)
+attrs[1] &= ~termios.OPOST;
+attrs[2] &= ~(termios.CSIZE | termios.PARENB)
+attrs[2] |= termios.CS8
+attrs[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON | termios.ISIG | termios.IEXTEN)
+attrs[4] = termios.B115200
+attrs[5] = termios.B115200
+attrs[6][0] = 0
+
+termios.tcsetattr(sys.stdin, termios.TCSAFLUSH, attrs)
+
+# Must always restore terminal even with error
+try:
+	# Doesn't seem to be helpful
+	# termios.tcsetattr(sys.stdout, termios.TCSAFLUSH, attrs)
+
+	write_thread = threading.Thread(target = write_fn, args = (args.port,))
+	write_thread.start()
+
+	file = open(args.port, "r")
+	#termios.tcsetattr(file, termios.TCSAFLUSH, attrs)
+
+	read_fn(file)
+	write_thread.join()
+
+except:
+	termios.tcsetattr(sys.stdin, termios.TCSAFLUSH, old_attrs)
+	raise
+
+termios.tcsetattr(sys.stdin, termios.TCSAFLUSH, old_attrs)
